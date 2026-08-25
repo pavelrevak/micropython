@@ -121,6 +121,47 @@ calling ``wlan.config(reconnects=n)``, where n are the number of desired reconne
 attempts (0 means it won't retry, -1 will restore the default behaviour of trying
 to reconnect forever).
 
+.. _esp32_network_async:
+
+Non-blocking scan and connect
+"""""""""""""""""""""""""""""
+
+The WLAN object is pollable on two separate flags: ``POLLIN`` signals that an
+enabled event is pending in the WLAN event register (a finished ``scan(block=False)``,
+a connect, a disconnect, ...; read ``status('events')`` to see which), and
+``POLLOUT`` signals an STA connection status change (read it with ``status()``).
+Using separate flags lets a scan wait and a connect wait run on the same object
+without interfering.  A finished scan is retrieved with ``scan_result()``; this
+drives non-blocking scan/connect via :func:`select.poll` or ``asyncio``::
+
+    import network, select
+
+    wlan = network.WLAN()
+    wlan.active(True)
+    wlan.scan(block=False)              # start scan, returns None
+    poller = select.poll()
+    poller.register(wlan, select.POLLIN)
+    poller.poll()                       # sleeps until the scan is done
+    aps = wlan.scan_result()            # ready -> results at once (clears EVENT_SCAN)
+
+With ``asyncio`` (scan waits for ``POLLIN``, connect for ``POLLOUT``)::
+
+    import asyncio
+
+    class AIOWLAN(network.WLAN):
+        async def ascan(self, **kw):
+            self.scan(block=False, **kw)
+            yield asyncio.core._io_queue.queue_read(self)   # POLLIN: scan done
+            return self.scan_result()
+
+        async def aconnect(self, ssid, key):
+            self.connect(ssid, key)
+            while self.status() == network.STAT_CONNECTING:
+                yield asyncio.core._io_queue.queue_write(self)  # POLLOUT: status changed
+            return self.isconnected()
+
+These are ``async`` methods -- call them with ``await`` (a bare call does nothing).
+
 .. _esp32_network_lan:
 
 LAN

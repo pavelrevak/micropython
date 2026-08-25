@@ -70,6 +70,25 @@ Methods
         * 0 -- visible
         * 1 -- hidden
 
+    On the ESP32 port, ``scan(block=False)`` starts the scan without blocking and
+    returns ``None``; the WLAN object then becomes readable (:func:`select.poll` or
+    ``asyncio``) when results are ready, retrieved by `WLAN.scan_result()`.
+    Readability is driven by the WLAN event register (see ``status('events')``
+    below); a finished scan is the ``EVENT_SCAN`` event.  ``status('scan')`` reports
+    the current scan state.  Other ports do not accept ``block``.  See the
+    :ref:`ESP32 quickref <esp32_network_async>`.
+
+.. method:: WLAN.scan_result()
+
+    (ESP32 only.)  Retrieve the results of a non-blocking ``scan(block=False)``
+    without blocking.  Returns the list of access-point tuples (in the same format
+    as `WLAN.scan()`, possibly empty) once the scan has finished, or ``None`` while
+    a scan is still running or none has completed.  Reading the results clears the
+    ``EVENT_SCAN`` event.  Raises ``OSError`` if the scan failed.
+
+    Blocking retrieval is done by `WLAN.scan()` itself; ``scan_result()`` never
+    blocks, so it is the counterpart used with :func:`select.poll` / ``asyncio``.
+
 .. method:: WLAN.status([param])
 
     Return the current status of the wireless connection.
@@ -97,6 +116,21 @@ Methods
     CC3200).  The format of the station information entries varies across ports,
     providing either the raw BSSID of the connected station, the IP address of the
     connected station, or both.
+
+    On ESP32, passing ``'events'`` returns a bitmask of pending asynchronous events
+    (the ``WLAN.EVENT_*`` constants).  This is a pure read: the driver sets a bit when
+    the event occurs and it is cleared when you read the corresponding value --
+    ``scan_result()`` clears ``EVENT_SCAN``, ``isconnected()`` clears ``EVENT_CONNECTED``
+    and ``EVENT_DISCONNECTED``, and ``status('stations')`` clears ``EVENT_STATIONS``.
+    The WLAN object is readable (:func:`select.poll` / ``asyncio``) while any event
+    enabled in the ``event_mask`` config option is pending, so a single poll can wait
+    for scan completion, a connect or disconnect, or a soft-AP client change; read
+    ``'events'`` to see which occurred.
+
+    On ESP32, passing ``'scan'`` returns the current scan state as one of
+    ``WLAN.SCAN_IDLE`` (no scan in progress and no result waiting), ``WLAN.SCAN_RUNNING``
+    (a scan is running) or ``WLAN.SCAN_DONE`` (finished, results waiting for
+    `WLAN.scan_result()`).  This is a pure read and does not clear any event.
 
 .. method:: WLAN.isconnected()
 
@@ -151,6 +185,7 @@ Methods
    sort_method    (ESP32 Only.) How matching APs are ranked when connecting. See `WLAN.SORT_BY_SIGNAL` and `WLAN.SORT_BY_SECURITY`.
    rssi_threshold (ESP32 Only.) Minimum RSSI (dBm, negative integer) an AP must have to be considered when connecting. ``0`` disables the threshold. Like the other connection policy parameters it is remembered by the Wi-Fi driver, so it keeps filtering later ``connect()`` calls until it is changed back.
    failure_retry_cnt (ESP32 Only.) Number of connection retries on one AP before moving to the next candidate. Requires ``scan_method=WLAN.SCAN_ALL_CHANNEL``.
+   event_mask     (ESP32 Only.) Bitmask of ``WLAN.EVENT_*`` events allowed to make the interface readable for :func:`select.poll` (default: all). See ``status('events')``.
    =============  ===========
 
    .. note::
@@ -166,6 +201,30 @@ Methods
          sta.connect(ssid, key)
 
       These settings persist across ``connect()`` calls until changed.
+
+Event constants (ESP32 only)
+----------------------------
+
+These identify the bits returned by ``status('events')`` and accepted by the
+``event_mask`` config option.  The interface becomes readable for
+:func:`select.poll` while any enabled event is pending; reading the associated
+value clears its bit.
+
+.. data:: WLAN.EVENT_SCAN
+          WLAN.EVENT_CONNECTED
+          WLAN.EVENT_DISCONNECTED
+          WLAN.EVENT_STATIONS
+
+    In order: a non-blocking ``scan()`` finished; the station obtained an IP; the
+    station disconnected; a soft-AP client joined or left.
+
+.. data:: WLAN.SCAN_IDLE
+          WLAN.SCAN_RUNNING
+          WLAN.SCAN_DONE
+
+    (ESP32 only.)  The scan state returned by ``status('scan')``: no scan in
+    progress and no result waiting; a scan is running; a scan has finished and its
+    results are waiting to be read by `WLAN.scan_result()`.
 
 CSI Methods (ESP32 only)
 ------------------------
