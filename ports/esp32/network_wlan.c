@@ -327,10 +327,21 @@ static mp_obj_t network_wlan_connect(size_t n_args, const mp_obj_t *pos_args, mp
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    wifi_config_t wifi_sta_config = {0};
-
     // configure any parameters that are given
     if (n_args > 1) {
+        // Read the current config first so that connection policy set earlier via
+        // config() (scan_method, sort_method, threshold, ...) is preserved; a plain
+        // zero-init here would reset those fields back to their defaults.
+        wifi_config_t wifi_sta_config = {0};
+        esp_exceptions(esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_sta_config));
+
+        // The connection identity is (re)specified on every connect() call, so clear
+        // it before applying the given arguments (don't inherit stale credentials).
+        memset(wifi_sta_config.sta.ssid, 0, sizeof(wifi_sta_config.sta.ssid));
+        memset(wifi_sta_config.sta.password, 0, sizeof(wifi_sta_config.sta.password));
+        memset(wifi_sta_config.sta.bssid, 0, sizeof(wifi_sta_config.sta.bssid));
+        wifi_sta_config.sta.bssid_set = 0;
+
         size_t len;
         const char *p;
         if (args[ARG_ssid].u_obj != mp_const_none) {
@@ -637,6 +648,26 @@ static mp_obj_t network_wlan_config(size_t n_args, const mp_obj_t *args, mp_map_
                         conf_wifi_sta_reconnects = (reconnects == -1) ? 0 : reconnects + 1;
                         break;
                     }
+                    case MP_QSTR_scan_method: {
+                        req_if = ESP_IF_WIFI_STA;
+                        cfg.sta.scan_method = mp_obj_get_int(kwargs->table[i].value);
+                        break;
+                    }
+                    case MP_QSTR_sort_method: {
+                        req_if = ESP_IF_WIFI_STA;
+                        cfg.sta.sort_method = mp_obj_get_int(kwargs->table[i].value);
+                        break;
+                    }
+                    case MP_QSTR_rssi_threshold: {
+                        req_if = ESP_IF_WIFI_STA;
+                        cfg.sta.threshold.rssi = mp_obj_get_int(kwargs->table[i].value);
+                        break;
+                    }
+                    case MP_QSTR_failure_retry_cnt: {
+                        req_if = ESP_IF_WIFI_STA;
+                        cfg.sta.failure_retry_cnt = mp_obj_get_int(kwargs->table[i].value);
+                        break;
+                    }
                     case MP_QSTR_txpower: {
                         int8_t power = (mp_obj_get_float(kwargs->table[i].value) * 4);
                         esp_exceptions(esp_wifi_set_max_tx_power(power));
@@ -742,6 +773,22 @@ static mp_obj_t network_wlan_config(size_t n_args, const mp_obj_t *args, mp_map_
             int rec = conf_wifi_sta_reconnects - 1;
             val = MP_OBJ_NEW_SMALL_INT(rec);
             break;
+        case MP_QSTR_scan_method:
+            req_if = ESP_IF_WIFI_STA;
+            val = MP_OBJ_NEW_SMALL_INT(cfg.sta.scan_method);
+            break;
+        case MP_QSTR_sort_method:
+            req_if = ESP_IF_WIFI_STA;
+            val = MP_OBJ_NEW_SMALL_INT(cfg.sta.sort_method);
+            break;
+        case MP_QSTR_rssi_threshold:
+            req_if = ESP_IF_WIFI_STA;
+            val = MP_OBJ_NEW_SMALL_INT(cfg.sta.threshold.rssi);
+            break;
+        case MP_QSTR_failure_retry_cnt:
+            req_if = ESP_IF_WIFI_STA;
+            val = MP_OBJ_NEW_SMALL_INT(cfg.sta.failure_retry_cnt);
+            break;
         case MP_QSTR_txpower: {
             int8_t power;
             esp_exceptions(esp_wifi_get_max_tx_power(&power));
@@ -835,6 +882,12 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_BANDWIDTH_80), MP_ROM_INT(WIFI_BW80) },
     { MP_ROM_QSTR(MP_QSTR_BANDWIDTH_160), MP_ROM_INT(WIFI_BW160) },
     { MP_ROM_QSTR(MP_QSTR_BANDWIDTH_80_80), MP_ROM_INT(WIFI_BW80_BW80) },
+
+    { MP_ROM_QSTR(MP_QSTR_SCAN_FAST), MP_ROM_INT(WIFI_FAST_SCAN) },
+    { MP_ROM_QSTR(MP_QSTR_SCAN_ALL_CHANNEL), MP_ROM_INT(WIFI_ALL_CHANNEL_SCAN) },
+
+    { MP_ROM_QSTR(MP_QSTR_SORT_BY_SIGNAL), MP_ROM_INT(WIFI_CONNECT_AP_BY_SIGNAL) },
+    { MP_ROM_QSTR(MP_QSTR_SORT_BY_SECURITY), MP_ROM_INT(WIFI_CONNECT_AP_BY_SECURITY) },
 };
 static MP_DEFINE_CONST_DICT(wlan_if_locals_dict, wlan_if_locals_dict_table);
 

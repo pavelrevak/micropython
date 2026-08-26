@@ -147,7 +147,25 @@ Methods
    pm             WiFi Power Management setting (see below for allowed values)
    protocol       (ESP32 Only.) WiFi Low level 802.11 protocol. See `WLAN.PROTOCOL_DEFAULT`.
    bandwidth      (ESP32 Only.) WiFi channel bandwidth. See `WLAN.BANDWIDTH_20` and others.
+   scan_method    (ESP32 Only.) How the STA scans for the target AP when connecting. See `WLAN.SCAN_FAST` and `WLAN.SCAN_ALL_CHANNEL`.
+   sort_method    (ESP32 Only.) How matching APs are ranked when connecting. See `WLAN.SORT_BY_SIGNAL` and `WLAN.SORT_BY_SECURITY`.
+   rssi_threshold (ESP32 Only.) Minimum RSSI (dBm, negative integer) an AP must have to be considered when connecting. ``0`` disables the threshold. Like the other connection policy parameters it is remembered by the Wi-Fi driver, so it keeps filtering later ``connect()`` calls until it is changed back.
+   failure_retry_cnt (ESP32 Only.) Number of connection retries on one AP before moving to the next candidate. Requires ``scan_method=WLAN.SCAN_ALL_CHANNEL``.
    =============  ===========
+
+   .. note::
+
+      On ESP32, ``connect()`` defaults to a *fast scan* that joins the **first**
+      matching AP found, which in a network with several APs of the same SSID may
+      not be the strongest one. To make ``connect()`` pick the AP with the best
+      signal, set an all-channel scan sorted by signal **before** calling
+      ``connect()``::
+
+         sta.config(scan_method=network.WLAN.SCAN_ALL_CHANNEL,
+                    sort_method=network.WLAN.SORT_BY_SIGNAL)
+         sta.connect(ssid, key)
+
+      These settings persist across ``connect()`` calls until changed.
 
 CSI Methods (ESP32 only)
 ------------------------
@@ -311,6 +329,26 @@ network interface parameter:
 
       When in STA mode, bandwidth can only be changed when the adapter is not connected to a
       network.  In AP mode it can be changed at any time.
+
+.. data:: WLAN.SCAN_FAST
+        WLAN.SCAN_ALL_CHANNEL
+
+      (ESP32 only.) Allowed values for the ``WLAN.config(scan_method=...)`` parameter,
+      controlling how the station scans for the target AP when connecting:
+
+      * ``SCAN_FAST``: stop scanning as soon as a matching AP is found (the default;
+        fastest connect, but joins the first match, not necessarily the strongest).
+      * ``SCAN_ALL_CHANNEL``: scan every channel before connecting, so the AP can be
+        chosen according to ``sort_method`` (use this to join the strongest AP).
+
+.. data:: WLAN.SORT_BY_SIGNAL
+        WLAN.SORT_BY_SECURITY
+
+      (ESP32 only.) Allowed values for the ``WLAN.config(sort_method=...)`` parameter,
+      controlling how matching APs are ranked (only relevant with ``SCAN_ALL_CHANNEL``):
+
+      * ``SORT_BY_SIGNAL``: connect to the matching AP with the strongest signal.
+      * ``SORT_BY_SECURITY``: connect to the matching AP with the strongest security.
 
 .. _ESP-IDF Wi-Fi Protocols: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/wifi.html#wi-fi-protocol-mode
 .. _Espressif proprietary "long-range" mode:
