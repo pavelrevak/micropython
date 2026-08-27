@@ -78,6 +78,31 @@ Methods
     the current scan state.  Other ports do not accept ``block``.  See the
     :ref:`ESP32 quickref <esp32_network_async>`.
 
+    The ESP32 port also accepts keyword arguments that narrow the scan.  A directed
+    scan is dramatically faster: restricting a dual-band scan to a single channel
+    drops it from seconds to a few tens of milliseconds, which makes it usable inside
+    a roaming loop (e.g. to measure the neighbours reported by ``status('neighbors')``).
+
+        * ``channel`` -- scan only this channel (``0``, the default, scans all).  This
+          is the main speed lever.
+        * ``ssid`` -- only report access points with this SSID.  On its own it still
+          scans every channel; combine it with ``channel`` to also scan quickly.
+        * ``bssid`` -- only report the access point with this MAC (6 bytes).  Useful to
+          measure one known AP's RSSI without connecting.
+        * ``passive`` -- listen for beacons instead of sending probe requests.  Slower,
+          but does not announce the station.  The driver already scans this way by
+          itself on the channels where it must (5 GHz DFS).
+        * ``dwell_ms`` -- time spent per channel, in milliseconds.  An ``int`` sets the
+          maximum active (and passive) time; a ``(min, max)`` tuple sets the active
+          scan window (see 802.11 MinChannelTime / MaxChannelTime).  ``0`` (the
+          default) keeps the driver's own timing.  A short dwell trades completeness
+          for speed, and it also overrides the longer listening time the driver
+          reserves for passively scanned channels, so weak and 5 GHz DFS access points
+          are the first to go missing.
+
+    These keyword arguments apply when a scan is started; they are ignored on a
+    ``scan(block=False)`` call that only collects an already-running scan.
+
 .. method:: WLAN.scan_result()
 
     (ESP32 only.)  Retrieve the results of a non-blocking ``scan(block=False)``

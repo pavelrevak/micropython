@@ -103,6 +103,9 @@ enum { WIFI_SCAN_IDLE, WIFI_SCAN_SCANNING, WIFI_SCAN_DONE };
 static volatile uint8_t wifi_scan_state = WIFI_SCAN_IDLE;
 // Status of the last completed scan (0 = success), from the SCAN_DONE event.
 static volatile uint8_t wifi_scan_result = 0;
+// Whether that scan was BSSID-directed: the driver leaves the SSID empty in the
+// records of such a scan, so an empty SSID does not mean a hidden AP there.
+static bool wifi_scan_bssid_directed = false;
 static volatile bool wifi_status_changed = false;
 
 // WLAN event register: IF (pending, atomic) gated by IE (enable mask, MP task
@@ -564,7 +567,11 @@ static mp_obj_t network_wlan_scan_get_records(void) {
         t->items[2] = MP_OBJ_NEW_SMALL_INT(wifi_ap_records[i].primary);
         t->items[3] = MP_OBJ_NEW_SMALL_INT(wifi_ap_records[i].rssi);
         t->items[4] = MP_OBJ_NEW_SMALL_INT(wifi_ap_records[i].authmode);
-        t->items[5] = mp_const_false; // XXX hidden?
+        // A hidden AP does not broadcast its SSID, so with show_hidden its record
+        // comes back with an empty SSID.
+        // A hidden AP answers with an empty SSID -- but so does every AP found by
+        // a BSSID-directed scan, which must not be reported as hidden.
+        t->items[5] = mp_obj_new_bool(ssid_len == 0 && !wifi_scan_bssid_directed);
         mp_obj_list_append(list, MP_OBJ_FROM_PTR(t));
     }
     free(wifi_ap_records);
@@ -572,16 +579,15 @@ static mp_obj_t network_wlan_scan_get_records(void) {
 }
 
 // Kick off a non-blocking scan (IDF fires WIFI_EVENT_SCAN_DONE on completion).
-static void network_wlan_scan_start(void) {
-    wifi_scan_config_t config = { 0 };
-    config.show_hidden = true;
+static void network_wlan_scan_start(wifi_scan_config_t *config) {
     // Set the state before starting: the event task may fire SCAN_DONE before
     // esp_wifi_scan_start() even returns, and it must not be overwritten.
     wifi_scan_result = 0;
+    wifi_scan_bssid_directed = config->bssid != NULL;
     wifi_scan_state = WIFI_SCAN_SCANNING;
     atomic_fetch_and_explicit(&wifi_events, ~WLAN_EVENT_SCAN, memory_order_relaxed);
     MP_THREAD_GIL_EXIT();
-    esp_err_t status = esp_wifi_scan_start(&config, 0);
+    esp_err_t status = esp_wifi_scan_start(config, 0);
     MP_THREAD_GIL_ENTER();
     if (status != ESP_OK) {
         wifi_scan_state = WIFI_SCAN_IDLE;
@@ -593,9 +599,14 @@ static void network_wlan_scan_start(void) {
 // compatible).  block=False: (re)start a scan, return None; poll the object for
 // POLLIN (WLAN.EVENT_SCAN) and call scan_result() once readable.
 static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_block };
+    enum { ARG_block, ARG_channel, ARG_ssid, ARG_bssid, ARG_passive, ARG_dwell_ms };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_block, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+        { MP_QSTR_channel, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_ssid, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_bssid, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_passive, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+        { MP_QSTR_dwell_ms, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
@@ -608,6 +619,64 @@ static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_ma
         mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("STA must be active"));
     }
 
+    // Build the scan config. A channel and/or ssid filter makes the scan much
+    // faster (one channel drops a dual-band scan from seconds to ms); an ssid also
+    // acts as a directed probe that finds a hidden network by name.
+    wifi_scan_config_t config = { 0 };
+    config.show_hidden = true;
+    mp_int_t channel = args[ARG_channel].u_int;
+    if (channel < 0 || channel > 255) {
+        // The IDF field is a uint8_t, so a larger value would silently truncate
+        // (and 256 would become 0, meaning "scan every channel").
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid channel"));
+    }
+    config.channel = channel;
+    uint8_t ssid_buf[33];
+    if (args[ARG_ssid].u_obj != mp_const_none) {
+        size_t len;
+        const char *s = mp_obj_str_get_data(args[ARG_ssid].u_obj, &len);
+        len = MIN(len, sizeof(ssid_buf) - 1);
+        memcpy(ssid_buf, s, len);
+        ssid_buf[len] = 0;
+        config.ssid = ssid_buf;
+    }
+    if (args[ARG_bssid].u_obj != mp_const_none) {
+        mp_buffer_info_t bufinfo;
+        mp_get_buffer_raise(args[ARG_bssid].u_obj, &bufinfo, MP_BUFFER_READ);
+        if (bufinfo.len != 6) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid bssid"));
+        }
+        config.bssid = bufinfo.buf;
+    }
+    if (args[ARG_passive].u_bool) {
+        config.scan_type = WIFI_SCAN_TYPE_PASSIVE;
+    }
+    // dwell_ms: time spent per channel. An int sets the active max (and passive)
+    // time; a (min, max) tuple sets the active scan window. 0 keeps IDF defaults.
+    if (args[ARG_dwell_ms].u_obj != mp_const_none) {
+        mp_int_t dwell_min = 0, dwell_max;
+        if (mp_obj_is_int(args[ARG_dwell_ms].u_obj)) {
+            dwell_max = mp_obj_get_int(args[ARG_dwell_ms].u_obj);
+        } else {
+            size_t n;
+            mp_obj_t *items;
+            mp_obj_get_array(args[ARG_dwell_ms].u_obj, &n, &items);
+            if (n != 2) {
+                mp_raise_ValueError(MP_ERROR_TEXT("dwell_ms must be int or (min, max)"));
+            }
+            dwell_min = mp_obj_get_int(items[0]);
+            dwell_max = mp_obj_get_int(items[1]);
+        }
+        if (dwell_min < 0 || dwell_max < 0) {
+            // The IDF fields are unsigned: a negative value would wrap to a huge
+            // dwell time and the scan would never return.
+            mp_raise_ValueError(MP_ERROR_TEXT("dwell_ms must not be negative"));
+        }
+        config.scan_time.active.min = dwell_min;
+        config.scan_time.active.max = dwell_max;
+        config.scan_time.passive = dwell_max;
+    }
+
     if (!block) {
         // Non-blocking: ensure a fresh scan is running, then return immediately.
         if (wifi_scan_state == WIFI_SCAN_DONE) {
@@ -616,14 +685,15 @@ static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_ma
             wifi_scan_state = WIFI_SCAN_IDLE;
         }
         if (wifi_scan_state == WIFI_SCAN_IDLE) {
-            network_wlan_scan_start();
+            network_wlan_scan_start(&config);
         }
         return mp_const_none;
     }
 
-    // Blocking: wait for the radio (it does one scan at a time), drop anything a
-    // scan(block=False) left behind -- those results belong to scan_result(), not
-    // here -- and then run this call's own scan.
+    // Blocking: scan() always scans with the arguments it was given, so wait for
+    // the radio (it does one scan at a time), drop anything a scan(block=False)
+    // left behind -- those results belong to scan_result(), not here -- and then
+    // run this call's own scan.
     while (wifi_scan_state == WIFI_SCAN_SCANNING) {
         MICROPY_EVENT_POLL_HOOK;
     }
@@ -633,7 +703,7 @@ static mp_obj_t network_wlan_scan(size_t n_args, const mp_obj_t *pos_args, mp_ma
         esp_wifi_clear_ap_list();
         wifi_scan_state = WIFI_SCAN_IDLE;
     }
-    network_wlan_scan_start();
+    network_wlan_scan_start(&config);
     while (wifi_scan_state == WIFI_SCAN_SCANNING) {
         MICROPY_EVENT_POLL_HOOK;
     }
