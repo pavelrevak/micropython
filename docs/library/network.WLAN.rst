@@ -241,6 +241,30 @@ Methods
 
       These settings persist across ``connect()`` calls until changed.
 
+   .. note::
+
+      **Wi-Fi roaming (ESP32).** Roaming lets the station move to a stronger access
+      point of the same network. It is configured entirely at build time and needs
+      no application code. It is off by default; a board enables it by adding the
+      ``boards/sdkconfig.roaming`` fragment to its ``SDKCONFIG_DEFAULTS`` in
+      ``mpconfigboard.cmake``:
+
+      * ``boards/sdkconfig.roaming`` turns on 802.11k/v (and 802.11r fast
+        transition).  The station advertises these capabilities on every
+        ``connect()`` so the access point can steer it to a better BSS without
+        dropping the connection (network-assisted roaming).  This requires the
+        network infrastructure to actually send the steering requests.
+      * ``boards/sdkconfig.roaming_app`` (add in addition to the above) turns on
+        Espressif's experimental roaming app: the station also roams autonomously,
+        scanning and moving to a stronger AP on low signal, entirely in the Wi-Fi
+        task.  This app has no runtime switch.
+
+      On a roaming build the station is free to move between the access points of
+      the network, so pinning it to one AP with the *bssid* argument of ``connect()``
+      is not honoured across roams.  Poll ``status('bssid')`` to observe when a roam
+      occurred, and enable the ESP-IDF log (see `esp32.osdebug`) to see the roaming
+      app's decisions.
+
 Event constants (ESP32 only)
 ----------------------------
 

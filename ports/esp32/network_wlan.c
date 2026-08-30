@@ -195,11 +195,25 @@ static void network_wlan_wifi_event_handler(void *event_handler_arg, esp_event_b
                     // Password may be wrong, or it just failed to connect; try to reconnect.
                     message = "authentication failed";
                     break;
+                case WIFI_REASON_ROAMING:
+                    // Handled below: this is a handover, not a disconnection.
+                    message = "roaming";
+                    break;
                 default:
                     // Let other errors through and try to reconnect.
                     break;
             }
             ESP_LOGI("wifi", "STA_DISCONNECTED, reason:%d:%s", disconn->reason, message);
+
+            if (disconn->reason == WIFI_REASON_ROAMING) {
+                // The station is moving to another BSS of the same network, it is
+                // not losing the connection: the Wi-Fi stack keeps the IP stack up
+                // across the roam and reassociates to the chosen BSS itself.  No
+                // IP_EVENT_STA_GOT_IP follows, so the connection state must survive
+                // this event, and reconnecting here would race the handover
+                // (esp_wifi_connect() returns 0x3007 "sta is connecting").
+                break;
+            }
 
             wifi_sta_connected = false;
             wifi_status_changed = true;
@@ -419,6 +433,16 @@ static mp_obj_t network_wlan_connect(size_t n_args, const mp_obj_t *pos_args, mp
             wifi_sta_config.sta.bssid_set = 1;
             memcpy(wifi_sta_config.sta.bssid, p, sizeof(wifi_sta_config.sta.bssid));
         }
+        #if CONFIG_ESP_WIFI_11KV_SUPPORT
+        // Advertise the 802.11k/v (and 802.11r) roaming capabilities so the AP can
+        // steer this station to a better BSS.  Enabled at build time via
+        // boards/sdkconfig.roaming; no effect on non-roaming builds.
+        wifi_sta_config.sta.rm_enabled = 1;
+        wifi_sta_config.sta.btm_enabled = 1;
+        #if CONFIG_ESP_WIFI_11R_SUPPORT
+        wifi_sta_config.sta.ft_enabled = 1;
+        #endif
+        #endif
         esp_exceptions(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_sta_config));
     }
 

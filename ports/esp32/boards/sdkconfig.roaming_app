@@ -1,0 +1,23 @@
+# Autonomous (station-decided) Wi-Fi roaming -- Espressif's experimental roaming
+# app. Add this fragment IN ADDITION to boards/sdkconfig.roaming when the station
+# should scan and move to a stronger AP on its own, entirely in the Wi-Fi task
+# (no application code, no runtime switch). It is experimental in ESP-IDF, hence
+# the separate opt-in fragment.
+
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_ESP_WIFI_ENABLE_ROAMING_APP=y
+
+# Keep the IP address (and open sockets) across a roam instead of doing a DHCP
+# renew -- makes a reason-207 (ROAMING) transition seamless at L3. Safe when the
+# whole SSID is one subnet (the usual case); the Wi-Fi stack skips the netif
+# down/up on a roaming disconnect.
+CONFIG_ESP_WIFI_ROAMING_IP_RENEW_SKIP=y
+
+# Roaming app tuning (commented lines are the ESP-IDF defaults; uncomment to tune).
+# Defaults suit phones; an ESP32's small antenna often sees -60..-70 dBm close by,
+# so consider lower thresholds. A channel list must cover all your APs' channels.
+#CONFIG_ESP_WIFI_ROAMING_LOW_RSSI_THRESHOLD=-60
+#CONFIG_ESP_WIFI_ROAMING_PERIODIC_SCAN_THRESHOLD=-50
+#CONFIG_ESP_WIFI_ROAMING_SCAN_ROAM_RSSI_DIFF=15
+#CONFIG_ESP_WIFI_ROAMING_SCAN_MONITOR_INTERVAL=30
+#CONFIG_ESP_WIFI_ROAMING_SCAN_CHAN_LIST="None"

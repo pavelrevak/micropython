@@ -1,0 +1,20 @@
+# Wi-Fi roaming support (opt-in per board; adds WPA supplicant roaming code).
+# A board enables it by adding this fragment to SDKCONFIG_DEFAULTS in its
+# mpconfigboard.cmake. Roaming is driven at build time; connect() advertises the
+# capabilities automatically, no application code needed.
+#
+# This fragment enables network-assisted roaming only: the access point steers the
+# station to a better BSS. For autonomous (station-decided) roaming add the
+# separate, experimental boards/sdkconfig.roaming_app fragment as well.
+
+# 802.11k (radio measurement / neighbor report) and 802.11v (BSS transition
+# management): let the access point steer the station to a better BSS.
+CONFIG_ESP_WIFI_11KV_SUPPORT=y
+
+# 802.11r fast transition: makes the roam handover quicker (skips the full
+# reauthentication) when the network is configured for it.
+CONFIG_ESP_WIFI_11R_SUPPORT=y
+
+# Note: do NOT enable CONFIG_ESP_WIFI_ROAMING_PERIODIC_RRM_MONITORING here -- the
+# ESP-IDF roaming_app fails to compile with it (a duplicate report_len), so leave
+# it off.
