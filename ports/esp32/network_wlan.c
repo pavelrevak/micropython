@@ -45,6 +45,14 @@
 
 #include "esp_wifi.h"
 
+#if CONFIG_ESP_WIFI_11KV_SUPPORT
+// wpa_supplicant esp_rrm.h / esp_wnm.h functions, declared here as those headers
+// are only a private requirement of esp_wifi.
+bool esp_rrm_is_rrm_supported_connection(void);
+bool esp_wnm_is_btm_supported_connection(void);
+int esp_rrm_send_neighbor_report_request(void);
+#endif
+
 #if MICROPY_PY_NETWORK_WLAN_CSI
 #include "network_wlan_csi.h"
 #endif
@@ -82,6 +90,14 @@ static bool wifi_sta_connected = false;
 // Store the current status. 0 means None here, safe to do so as first enum value is WIFI_REASON_UNSPECIFIED=1.
 static uint8_t wifi_sta_disconn_reason = 0;
 
+#if CONFIG_ESP_WIFI_11KV_SUPPORT
+// Last 802.11k neighbour report: written by the event task, read by status('neighbors').
+// The spinlock guards the buffer/len pair against a torn read across the two tasks.
+static uint8_t wifi_neighbor_report[512];
+static volatile uint16_t wifi_neighbor_report_len = 0;
+static portMUX_TYPE wifi_neighbor_mux = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
 #if MICROPY_HW_ENABLE_MDNS_QUERIES || MICROPY_HW_ENABLE_MDNS_RESPONDER
 // Whether mDNS has been initialised or not (shared with network_lan.c)
 bool mdns_initialised = false;
@@ -114,6 +130,7 @@ static volatile bool wifi_status_changed = false;
 #define WLAN_EVENT_CONNECTED    (1u << 1)   // got IP               -> isconnected()
 #define WLAN_EVENT_DISCONNECTED (1u << 2)   // disconnected         -> isconnected()
 #define WLAN_EVENT_STATIONS     (1u << 3)   // AP client join/leave -> status('stations')
+#define WLAN_EVENT_NEIGHBORS    (1u << 4)   // 802.11k report ready -> status('neighbors')
 static _Atomic uint32_t wifi_events;
 static uint32_t wifi_event_mask = ~0u;
 
@@ -162,6 +179,27 @@ static void network_wlan_wifi_event_handler(void *event_handler_arg, esp_event_b
             ESP_LOGI("network", "CONNECTED");
             wifi_status_changed = true;
             break;
+
+        #if CONFIG_ESP_WIFI_11KV_SUPPORT
+        case WIFI_EVENT_STA_NEIGHBOR_REP: {
+            // Cache the 802.11k neighbour report for status('neighbors').  It is also
+            // posted with NULL data on an empty/failed report, so guard against that.
+            wifi_event_neighbor_report_t *nr = event_data;
+            portENTER_CRITICAL(&wifi_neighbor_mux);
+            if (nr == NULL) {
+                wifi_neighbor_report_len = 0;
+            } else {
+                uint16_t len = MIN(nr->report_len, sizeof(wifi_neighbor_report));
+                memcpy(wifi_neighbor_report, nr->n_report, len);
+                wifi_neighbor_report_len = len;
+            }
+            portEXIT_CRITICAL(&wifi_neighbor_mux);
+            if (wifi_neighbor_report_len) {
+                atomic_fetch_or_explicit(&wifi_events, WLAN_EVENT_NEIGHBORS, memory_order_release);
+            }
+            break;
+        }
+        #endif
 
         case WIFI_EVENT_STA_DISCONNECTED: {
             // This is a workaround as ESP32 WiFi libs don't currently
@@ -466,6 +504,16 @@ static mp_obj_t network_wlan_disconnect(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(network_wlan_disconnect_obj, network_wlan_disconnect);
 
+#if CONFIG_ESP_WIFI_11KV_SUPPORT
+static mp_obj_t network_wlan_neighbors(mp_obj_t self_in) {
+    // Request an 802.11k neighbour report from the AP.  The report arrives
+    // asynchronously (WLAN.EVENT_NEIGHBORS); read it back with status('neighbors').
+    // Returns True if the request was sent (i.e. the connection is RRM-capable).
+    return mp_obj_new_bool(esp_rrm_send_neighbor_report_request() == 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(network_wlan_neighbors_obj, network_wlan_neighbors);
+#endif
+
 static mp_obj_t network_wlan_status(size_t n_args, const mp_obj_t *args) {
     wlan_if_obj_t *self = MP_OBJ_TO_PTR(args[0]);
     if (n_args == 1) {
@@ -575,6 +623,68 @@ static mp_obj_t network_wlan_status(size_t n_args, const mp_obj_t *args) {
             require_if(args[0], ESP_IF_WIFI_STA);
             atomic_fetch_and_explicit(&wifi_events, ~WLAN_EVENT_DISCONNECTED, memory_order_relaxed);
             return MP_OBJ_NEW_SMALL_INT(wifi_sta_disconn_reason);
+        }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_rrm): {
+            // Does the connected AP support 802.11k? (STA only; None if not built in.)
+            require_if(args[0], ESP_IF_WIFI_STA);
+            #if CONFIG_ESP_WIFI_11KV_SUPPORT
+            return mp_obj_new_bool(esp_rrm_is_rrm_supported_connection());
+            #else
+            return mp_const_none;
+            #endif
+        }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_btm): {
+            // Does the connected AP support 802.11v BTM? (STA only; None if not built in.)
+            require_if(args[0], ESP_IF_WIFI_STA);
+            #if CONFIG_ESP_WIFI_11KV_SUPPORT
+            return mp_obj_new_bool(esp_wnm_is_btm_supported_connection());
+            #else
+            return mp_const_none;
+            #endif
+        }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_neighbors): {
+            // Return the last 802.11k neighbour report as a list of (bssid, channel),
+            // or None if none / not built in.  Request a fresh one with neighbors().
+            // STA only.
+            require_if(args[0], ESP_IF_WIFI_STA);
+            #if CONFIG_ESP_WIFI_11KV_SUPPORT
+            // Reading acknowledges the report event; copy it out under the lock so a
+            // concurrent event-task update cannot tear the buffer we parse.
+            atomic_fetch_and_explicit(&wifi_events, ~WLAN_EVENT_NEIGHBORS, memory_order_relaxed);
+            uint8_t report[sizeof(wifi_neighbor_report)];
+            uint16_t nlen;
+            portENTER_CRITICAL(&wifi_neighbor_mux);
+            nlen = wifi_neighbor_report_len;
+            memcpy(report, wifi_neighbor_report, nlen);
+            portEXIT_CRITICAL(&wifi_neighbor_mux);
+            if (nlen < 1) {
+                return mp_const_none;
+            }
+            mp_obj_t list = mp_obj_new_list(0, NULL);
+            // The report starts with a one-byte token; the elements follow it.
+            const uint8_t *p = report + 1;
+            int remaining = nlen - 1;
+            while (remaining >= 2) {
+                uint8_t elen = p[1];
+                if (2 + elen > remaining) {
+                    break;
+                }
+                // 52 = WLAN_EID_NEIGHBOR_REPORT; body = BSSID[6] info[4] opclass[1]
+                // channel[1] phy[1], so the channel is at body offset 11.
+                if (p[0] == 52 && elen >= 13) {
+                    mp_obj_t items[2] = {
+                        mp_obj_new_bytes(p + 2, 6),
+                        MP_OBJ_NEW_SMALL_INT(p[2 + 11]),
+                    };
+                    mp_obj_list_append(list, mp_obj_new_tuple(2, items));
+                }
+                p += 2 + elen;
+                remaining -= 2 + elen;
+            }
+            return list;
+            #else
+            return mp_const_none;
+            #endif
         }
         case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_events): {
             // Pending event bitmap (WLAN.EVENT_*).  Pure peek: does not clear; a
@@ -1158,6 +1268,9 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_status), MP_ROM_PTR(&network_wlan_status_obj) },
     { MP_ROM_QSTR(MP_QSTR_scan), MP_ROM_PTR(&network_wlan_scan_obj) },
     { MP_ROM_QSTR(MP_QSTR_scan_result), MP_ROM_PTR(&network_wlan_scan_result_obj) },
+    #if CONFIG_ESP_WIFI_11KV_SUPPORT
+    { MP_ROM_QSTR(MP_QSTR_neighbors), MP_ROM_PTR(&network_wlan_neighbors_obj) },
+    #endif
     { MP_ROM_QSTR(MP_QSTR_isconnected), MP_ROM_PTR(&network_wlan_isconnected_obj) },
     { MP_ROM_QSTR(MP_QSTR_config), MP_ROM_PTR(&network_wlan_config_obj) },
     { MP_ROM_QSTR(MP_QSTR_ifconfig), MP_ROM_PTR(&esp_network_ifconfig_obj) },
@@ -1222,6 +1335,9 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_EVENT_CONNECTED), MP_ROM_INT(WLAN_EVENT_CONNECTED) },
     { MP_ROM_QSTR(MP_QSTR_EVENT_DISCONNECTED), MP_ROM_INT(WLAN_EVENT_DISCONNECTED) },
     { MP_ROM_QSTR(MP_QSTR_EVENT_STATIONS), MP_ROM_INT(WLAN_EVENT_STATIONS) },
+    #if CONFIG_ESP_WIFI_11KV_SUPPORT
+    { MP_ROM_QSTR(MP_QSTR_EVENT_NEIGHBORS), MP_ROM_INT(WLAN_EVENT_NEIGHBORS) },
+    #endif
 
     { MP_ROM_QSTR(MP_QSTR_SCAN_IDLE), MP_ROM_INT(WIFI_SCAN_IDLE) },
     { MP_ROM_QSTR(MP_QSTR_SCAN_RUNNING), MP_ROM_INT(WIFI_SCAN_SCANNING) },

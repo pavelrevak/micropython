@@ -156,6 +156,20 @@ Methods
     reset to ``0`` once a connection succeeds.  Reading it acknowledges the
     ``EVENT_DISCONNECTED`` event (like ``isconnected()``).
 
+    On ESP32, in STA mode, passing ``'rrm'`` returns whether the currently connected
+    AP supports 802.11k radio measurement, and ``'btm'`` whether it supports 802.11v
+    BSS transition management.  These tell you whether the network is set up for
+    assisted roaming.  On builds compiled without roaming support
+    (``CONFIG_ESP_WIFI_11KV_SUPPORT``) both return ``None``.
+
+    On ESP32 with roaming support, in STA mode, passing ``'neighbors'`` returns the
+    last 802.11k neighbor report received from the access point as a list of
+    ``(bssid, channel)`` tuples (the neighbouring APs the network suggests as roam
+    candidates), or ``None`` if none has been received yet or the build lacks roaming
+    support.  Request a fresh report with `WLAN.neighbors()`; it arrives asynchronously
+    (the ``EVENT_NEIGHBORS`` event), so read it back here shortly after.  This tells
+    you which channels a directed `WLAN.scan()` could then target.
+
     On ESP32, passing ``'events'`` returns a bitmask of pending asynchronous events
     (the ``WLAN.EVENT_*`` constants).  This is a pure read: the driver sets a bit when
     the event occurs and it is cleared when you read the corresponding value --
@@ -176,6 +190,14 @@ Methods
     In case of STA mode, returns ``True`` if connected to a WiFi access
     point and has a valid IP address.  In AP mode returns ``True`` when a
     station is connected. Returns ``False`` otherwise.
+
+.. method:: WLAN.neighbors()
+
+    (ESP32 only, roaming builds.)  Request an 802.11k neighbor report from the
+    connected access point.  The report lists neighbouring APs of the same network
+    that are roam candidates.  It arrives asynchronously (the ``EVENT_NEIGHBORS``
+    event); read it back with ``status('neighbors')``.  Returns ``True`` if the
+    request was sent (needs an associated, RRM-capable AP; see ``status('rrm')``).
 
 .. method:: WLAN.ifconfig([(ip, subnet, gateway, dns)])
 
@@ -280,6 +302,11 @@ value clears its bit.
 
     In order: a non-blocking ``scan()`` finished; the station obtained an IP; the
     station disconnected; a soft-AP client joined or left.
+
+.. data:: WLAN.EVENT_NEIGHBORS
+
+    (Roaming builds only.)  An 802.11k neighbor report requested with
+    `WLAN.neighbors()` has arrived; read it with ``status('neighbors')``.
 
 .. data:: WLAN.SCAN_IDLE
           WLAN.SCAN_RUNNING
