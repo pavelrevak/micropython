@@ -51,6 +51,7 @@
 bool esp_rrm_is_rrm_supported_connection(void);
 bool esp_wnm_is_btm_supported_connection(void);
 int esp_rrm_send_neighbor_report_request(void);
+int esp_wnm_send_bss_transition_mgmt_query(int query_reason, const char *btm_candidates, int cand_list);
 #endif
 
 #if MICROPY_PY_NETWORK_WLAN_CSI
@@ -512,6 +513,16 @@ static mp_obj_t network_wlan_neighbors(mp_obj_t self_in) {
     return mp_obj_new_bool(esp_rrm_send_neighbor_report_request() == 0);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(network_wlan_neighbors_obj, network_wlan_neighbors);
+
+static mp_obj_t network_wlan_roam(size_t n_args, const mp_obj_t *args) {
+    // Send an 802.11v BTM query asking the AP to steer us to a better BSS (the AP
+    // chooses the target).  Returns True if the query was sent.  5 = REASON_RSSI.
+    // roam(True) also attaches the candidate APs from the supplicant's scan cache
+    // (do a scan() first), which some APs need before they will answer the query.
+    int cand_list = (n_args > 1) && mp_obj_is_true(args[1]);
+    return mp_obj_new_bool(esp_wnm_send_bss_transition_mgmt_query(5, NULL, cand_list) == 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(network_wlan_roam_obj, 1, 2, network_wlan_roam);
 #endif
 
 static mp_obj_t network_wlan_status(size_t n_args, const mp_obj_t *args) {
@@ -1270,6 +1281,7 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_scan_result), MP_ROM_PTR(&network_wlan_scan_result_obj) },
     #if CONFIG_ESP_WIFI_11KV_SUPPORT
     { MP_ROM_QSTR(MP_QSTR_neighbors), MP_ROM_PTR(&network_wlan_neighbors_obj) },
+    { MP_ROM_QSTR(MP_QSTR_roam), MP_ROM_PTR(&network_wlan_roam_obj) },
     #endif
     { MP_ROM_QSTR(MP_QSTR_isconnected), MP_ROM_PTR(&network_wlan_isconnected_obj) },
     { MP_ROM_QSTR(MP_QSTR_config), MP_ROM_PTR(&network_wlan_config_obj) },

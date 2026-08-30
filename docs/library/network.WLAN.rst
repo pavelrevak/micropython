@@ -199,6 +199,14 @@ Methods
     event); read it back with ``status('neighbors')``.  Returns ``True`` if the
     request was sent (needs an associated, RRM-capable AP; see ``status('rrm')``).
 
+.. method:: WLAN.roam()
+
+    (ESP32 only, roaming builds.)  Send an 802.11v BSS transition management query
+    asking the access point to steer the station to a better AP of the same network.
+    The access point chooses the target and the Wi-Fi stack performs the handover
+    (using 802.11r fast transition if the network supports it).  Returns ``True`` if
+    the query was sent (needs an associated, BTM-capable AP; see ``status('btm')``).
+
 .. method:: WLAN.ifconfig([(ip, subnet, gateway, dns)])
 
    Get/set IP-level network interface parameters: IP address, subnet mask,
