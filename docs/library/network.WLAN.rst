@@ -142,6 +142,20 @@ Methods
     providing either the raw BSSID of the connected station, the IP address of the
     connected station, or both.
 
+    On ESP32, in STA mode, passing ``'bssid'`` returns the MAC address (6 bytes) of
+    the access point the station is currently associated with, and ``'channel'``
+    returns its primary channel (this is the associated AP's channel, unlike
+    ``config('channel')`` which reports the radio's momentary channel and hops during
+    scans).
+
+    On ESP32, in STA mode, passing ``'reason'`` returns the reason code of the most
+    recent disconnect (one of the ``network.WLAN`` ``REASON_*`` / ESP-IDF
+    ``WIFI_REASON_*`` values, ``0`` if none).  Read while disconnected it distinguishes,
+    for example, an access-point-initiated deauthentication (band steering or a
+    minimum-RSSI kick) from a beacon timeout (the station losing the signal).  It is
+    reset to ``0`` once a connection succeeds.  Reading it acknowledges the
+    ``EVENT_DISCONNECTED`` event (like ``isconnected()``).
+
     On ESP32, passing ``'events'`` returns a bitmask of pending asynchronous events
     (the ``WLAN.EVENT_*`` constants).  This is a pure read: the driver sets a bit when
     the event occurs and it is cleared when you read the corresponding value --
@@ -433,6 +447,28 @@ network interface parameter:
 
       * ``SORT_BY_SIGNAL``: connect to the matching AP with the strongest signal.
       * ``SORT_BY_SECURITY``: connect to the matching AP with the strongest security.
+
+.. data:: WLAN.REASON_UNSPECIFIED
+        WLAN.REASON_AUTH_EXPIRE
+        WLAN.REASON_AUTH_LEAVE
+        WLAN.REASON_ASSOC_TOOMANY
+        WLAN.REASON_ASSOC_LEAVE
+        WLAN.REASON_BEACON_TIMEOUT
+        WLAN.REASON_NO_AP_FOUND
+        WLAN.REASON_AUTH_FAIL
+        WLAN.REASON_ASSOC_FAIL
+        WLAN.REASON_HANDSHAKE_TIMEOUT
+        WLAN.REASON_CONNECTION_FAIL
+        WLAN.REASON_ROAMING
+
+      (ESP32 only.) Common disconnect reason codes returned by ``status('reason')``.
+      The standard 802.11 codes (``REASON_AUTH_LEAVE``, ``REASON_ASSOC_TOOMANY``,
+      ``REASON_ASSOC_LEAVE`` and others) are sent by the access point, e.g. a
+      band-steering or minimum-RSSI kick.  The ESP-IDF specific codes describe what
+      the station saw: ``REASON_BEACON_TIMEOUT`` (lost the signal), ``REASON_ROAMING``
+      (the station roamed to another AP), ``REASON_AUTH_FAIL`` / ``REASON_ASSOC_FAIL``
+      (the association attempt was rejected).  These mirror the ESP-IDF
+      ``WIFI_REASON_*`` values; codes not listed here can be compared numerically.
 
 .. _ESP-IDF Wi-Fi Protocols: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/wifi.html#wi-fi-protocol-mode
 .. _Espressif proprietary "long-range" mode:

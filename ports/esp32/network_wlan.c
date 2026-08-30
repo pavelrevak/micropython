@@ -526,6 +526,32 @@ static mp_obj_t network_wlan_status(size_t n_args, const mp_obj_t *args) {
             esp_exceptions(esp_wifi_sta_get_ap_info(&info));
             return MP_OBJ_NEW_SMALL_INT(info.rssi);
         }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_bssid): {
+            // BSSID of the connected AP (STA only).
+            require_if(args[0], ESP_IF_WIFI_STA);
+
+            wifi_ap_record_t info;
+            esp_exceptions(esp_wifi_sta_get_ap_info(&info));
+            return mp_obj_new_bytes(info.bssid, sizeof(info.bssid));
+        }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_channel): {
+            // Primary channel of the connected AP (STA only); unlike config('channel')
+            // this is the AP's channel, not the radio's (which hops during scans).
+            require_if(args[0], ESP_IF_WIFI_STA);
+
+            wifi_ap_record_t info;
+            esp_exceptions(esp_wifi_sta_get_ap_info(&info));
+            return MP_OBJ_NEW_SMALL_INT(info.primary);
+        }
+        case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_reason): {
+            // Reason code of the last disconnect (WIFI_REASON_*, 0 = none); reset on a
+            // successful connect, so read it while disconnected. STA only.  Reading it
+            // acknowledges the disconnect event (like isconnected()); the value stays
+            // readable.
+            require_if(args[0], ESP_IF_WIFI_STA);
+            atomic_fetch_and_explicit(&wifi_events, ~WLAN_EVENT_DISCONNECTED, memory_order_relaxed);
+            return MP_OBJ_NEW_SMALL_INT(wifi_sta_disconn_reason);
+        }
         case (uintptr_t)MP_OBJ_NEW_QSTR(MP_QSTR_events): {
             // Pending event bitmap (WLAN.EVENT_*).  Pure peek: does not clear; a
             // bit is cleared by reading its value (see the register comment above).
@@ -1176,6 +1202,20 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_SCAN_IDLE), MP_ROM_INT(WIFI_SCAN_IDLE) },
     { MP_ROM_QSTR(MP_QSTR_SCAN_RUNNING), MP_ROM_INT(WIFI_SCAN_SCANNING) },
     { MP_ROM_QSTR(MP_QSTR_SCAN_DONE), MP_ROM_INT(WIFI_SCAN_DONE) },
+
+    // Disconnect reason codes returned by status('reason') (subset of WIFI_REASON_*).
+    { MP_ROM_QSTR(MP_QSTR_REASON_UNSPECIFIED), MP_ROM_INT(WIFI_REASON_UNSPECIFIED) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_AUTH_EXPIRE), MP_ROM_INT(WIFI_REASON_AUTH_EXPIRE) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_AUTH_LEAVE), MP_ROM_INT(WIFI_REASON_AUTH_LEAVE) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_ASSOC_TOOMANY), MP_ROM_INT(WIFI_REASON_ASSOC_TOOMANY) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_ASSOC_LEAVE), MP_ROM_INT(WIFI_REASON_ASSOC_LEAVE) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_BEACON_TIMEOUT), MP_ROM_INT(WIFI_REASON_BEACON_TIMEOUT) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_NO_AP_FOUND), MP_ROM_INT(WIFI_REASON_NO_AP_FOUND) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_AUTH_FAIL), MP_ROM_INT(WIFI_REASON_AUTH_FAIL) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_ASSOC_FAIL), MP_ROM_INT(WIFI_REASON_ASSOC_FAIL) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_HANDSHAKE_TIMEOUT), MP_ROM_INT(WIFI_REASON_HANDSHAKE_TIMEOUT) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_CONNECTION_FAIL), MP_ROM_INT(WIFI_REASON_CONNECTION_FAIL) },
+    { MP_ROM_QSTR(MP_QSTR_REASON_ROAMING), MP_ROM_INT(WIFI_REASON_ROAMING) },
 };
 static MP_DEFINE_CONST_DICT(wlan_if_locals_dict, wlan_if_locals_dict_table);
 
